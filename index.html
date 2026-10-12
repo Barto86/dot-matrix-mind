@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dot-Matrix Mind</title>
+<!-- Dot-Matrix Mind · Dan Bartlett · 2026 · v19 -->
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="vig"></div>
+  <div id="label">01 &middot; prompt</div>
+</div>
+<style>
+  html,body{margin:0;height:100%;background:#edece9;overflow:hidden;}
+  #wrap{position:fixed;inset:0;background:#edece9;}
+  #c{display:block;width:100%;height:100%;}
+  #vig{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(ellipse at center, rgba(120,124,132,0) 62%, rgba(120,124,132,0.14) 100%);}
+  #label{position:absolute;left:16px;bottom:14px;color:#5a5c64;opacity:.5;
+    font:11px/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;
+    text-transform:uppercase;pointer-events:none;transition:opacity .4s;}
+  #label.hidden{opacity:0;}
+</style>
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const labelEl=document.getElementById('label');
+
+// ---- content ----
+const PROMPT="how do neural nets learn";
+const TOKENS=["how","do","neur","al","nets","learn"];
+const OUTPUT="from data";
+
+// ---- palette ----
+const R=104,G=108,B=118;
+const L=24, core=[], glow=[];
+for(let i=0;i<L;i++){const f=i/(L-1);
+  core.push(`rgba(${R},${G},${B},${(0.05+0.82*f).toFixed(3)})`);
+  glow.push(`rgba(${R},${G},${B},${(0.02+0.07*f).toFixed(3)})`);}
+
+// ---- grid ----
+let W,H,dpr,spacing,cols,rows,N,maxR,NX,NY,PX,PY,FPH;
+let promptMask,outputMask,chips=[];
+const tcanvas=document.createElement('canvas'), tctx=tcanvas.getContext('2d');
+function build(){
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  W=window.innerWidth; H=window.innerHeight;
+  canvas.width=W*dpr; canvas.height=H*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  spacing=Math.max(14,Math.min(26,Math.min(W,H)/40));
+  cols=Math.floor(W/spacing)+1; rows=Math.floor(H/spacing)+1;
+  N=cols*rows; maxR=spacing*0.46;
+  const ox=(W-(cols-1)*spacing)/2, oy=(H-(rows-1)*spacing)/2;
+  NX=new Float32Array(N);NY=new Float32Array(N);PX=new Float32Array(N);PY=new Float32Array(N);FPH=new Float32Array(N);
+  let k=0;
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++,k++){
+    NX[k]=cols>1?c/(cols-1):0.5; NY[k]=rows>1?r/(rows-1):0.5;
+    PX[k]=ox+c*spacing; PY[k]=oy+r*spacing;
+    FPH[k]=(Math.sin(k*12.9898)*43758.5453)%1*6.2831853;
+  }
+  layoutText();
+}
+
+// ---- text -> dot mask + token chips ----
+function sampleMask(){
+  const img=tctx.getImageData(0,0,W,H).data, m=new Float32Array(N);
+  const rad=Math.max(2,Math.round(spacing*0.5));   // snap glyphs to the grid
+  for(let i=0;i<N;i++){
+    const cx=PX[i]|0, cy=PY[i]|0; let mx=0;
+    for(let oy=-rad;oy<=rad;oy+=3){const yy=cy+oy; if(yy<0||yy>=H)continue;
+      for(let ox=-rad;ox<=rad;ox+=3){const xx=cx+ox; if(xx<0||xx>=W)continue;
+        const a=img[(yy*W+xx)*4+3]; if(a>mx)mx=a;}}
+    m[i]=mx/255;
+  }
+  return m;
+}
+function wrapDraw(text,yc,fpx,maxw){
+  const words=text.split(' '),lines=[]; let cur='';
+  for(const wd of words){const t=cur?cur+' '+wd:wd;
+    if(tctx.measureText(t).width>maxw&&cur){lines.push(cur);cur=wd;}else cur=t;}
+  if(cur)lines.push(cur);
+  const lh=fpx*1.12, y0=yc-(lines.length-1)*lh/2;
+  lines.forEach((l,i)=>tctx.fillText(l,W/2,y0+i*lh));
+}
+function layoutText(){
+  tcanvas.width=W; tcanvas.height=H;
+  const cl=(x,a,b)=>x<a?a:x>b?b:x;
+  const pf=Math.round(cl(spacing*3.4,44,140));
+  tctx.fillStyle='#fff'; tctx.textAlign='center'; tctx.textBaseline='middle';
+  tctx.clearRect(0,0,W,H); tctx.font='800 '+pf+'px Arial, sans-serif';
+  wrapDraw(PROMPT,0.34*H,pf,0.84*W); promptMask=sampleMask();
+  tctx.clearRect(0,0,W,H); tctx.font='800 '+pf+'px Arial, sans-serif';
+  tctx.fillText(OUTPUT,W/2,0.62*H); outputMask=sampleMask();
+  // chips
+  chips=[]; const cf=Math.round(cl(spacing*0.95,12,22));
+  tctx.font='600 '+cf+'px monospace';
+  const padX=cf*0.75, gap=cf*0.6, ph=cf*1.9, maxw=0.84*W;
+  const items=TOKENS.map(t=>({text:t,pw:tctx.measureText(t).width+padX*2,ph,fpx:cf}));
+  const rws=[[]]; let rw=0;
+  for(const it of items){if(rw+it.pw+gap>maxw&&rws[rws.length-1].length){rws.push([]);rw=0;}rws[rws.length-1].push(it);rw+=it.pw+gap;}
+  const rh=ph+gap, y0=0.34*H-(rws.length-1)*rh/2;
+  rws.forEach((row,ri)=>{let tot=row.reduce((s,it)=>s+it.pw+gap,0)-gap,x=W/2-tot/2,y=y0+ri*rh;
+    row.forEach(it=>{it.px=x+it.pw/2;it.py=y;chips.push(it);x+=it.pw+gap;});});
+}
+window.addEventListener('resize',build); build();
+
+// ---- helpers ----
+const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+const ss=(a,b,x)=>{let t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);};
+const gd=(dx,dy,s)=>Math.exp(-(dx*dx+dy*dy)/(2*s*s));
+function segDist(px,py,ax,ay,bx,by){const vx=bx-ax,vy=by-ay,wx=px-ax,wy=py-ay;
+  let t=clamp((vx*wx+vy*wy)/(vx*vx+vy*vy+1e-6),0,1);return Math.hypot(px-(ax+t*vx),py-(ay+t*vy));}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function rrect(c,x,y,w,h,r){c.beginPath();c.moveTo(x+r,y);c.arcTo(x+w,y,x+w,y+h,r);c.arcTo(x+w,y+h,x,y+h,r);c.arcTo(x,y+h,x,y,r);c.arcTo(x,y,x+w,y,r);c.closePath();}
+
+// ---- per-loop graph + candidates ----
+let heads=[],cands=[],winner={x:.5,y:.5,w:1},capLayout=[];
+function regen(seed){
+  const rng=mulberry32((seed>>>0)^0x9e3779b9);
+  const nn=8,nodes=[]; for(let i=0;i<nn;i++)nodes.push({x:.12+rng()*.76,y:.10+rng()*.70});
+  heads=[]; for(let i=0;i<7;i++){const a=nodes[(rng()*nn)|0],b=nodes[(rng()*nn)|0];heads.push({sx:a.x,sy:a.y,tx:b.x,ty:b.y,off:rng()});}
+  cands=[]; const n=4+Math.floor(rng()*3);
+  for(let i=0;i<n;i++)cands.push({x:.15+rng()*.7,y:.12+rng()*.62,w:.3+rng()});
+  winner=cands.reduce((a,b)=>b.w>a.w?b:a);
+  capLayout=[]; const al=['left','center','right'];
+  for(let p=0;p<8;p++)capLayout.push({
+    cxf:0.22+rng()*0.56, cyf:0.14+rng()*0.66,
+    s1f:0.020+rng()*0.028, align:al[(rng()*3)|0]});
+}
+regen(0);
+
+// ---- background activity + the eight stages ----
+function substrate(nx,ny,t,i){
+  const flow=0.5+0.5*Math.sin(nx*3.0-t*0.38+Math.sin(ny*2.0+t*0.14)*1.2);
+  const ph=FPH[i], fire=Math.pow(0.5+0.5*Math.sin(t*1.8+ph+nx*5*Math.sin(ph)),10);
+  return 0.08+0.12*flow+0.34*fire;
+}
+function chipCluster(px,py,lp){
+  let v=0;
+  for(let i=0;i<chips.length;i++){const c=chips[i];
+    const on=ss(i/chips.length-0.03,i/chips.length+0.10,lp); if(on<=0)continue;
+    const ax=1-ss(c.pw*0.5-spacing,c.pw*0.5,Math.abs(px-c.px));
+    const ay=1-ss(c.ph*0.5-spacing,c.ph*0.5,Math.abs(py-c.py));
+    if(ax>0&&ay>0)v=Math.max(v,on*ax*ay*0.6);}
+  return v;
+}
+function pEmbed(nx,ny,lp,t){
+  const f=0.5+0.5*Math.sin(nx*6+Math.sin(ny*4+t*0.35)*1.6+t*0.24)*Math.cos(ny*5-t*0.28+nx*1.5);
+  const hx=0.5+0.3*Math.sin(t*0.35),hy=0.5+0.25*Math.cos(t*0.42);
+  return clamp(0.25+0.7*f+0.5*gd(nx-hx,ny-hy,0.18),0,1);
+}
+function pAttend(nx,ny,lp,t){
+  let v=0.03;
+  for(let a=0;a<heads.length;a++){const h=heads[a];
+    v+=0.32*gd(nx-h.sx,ny-h.sy,0.05);
+    const pp=(t*0.20+h.off)%1;
+    v+=0.55*gd(nx-(h.sx+(h.tx-h.sx)*pp),ny-(h.sy+(h.ty-h.sy)*pp),0.026);
+    const ld=segDist(nx,ny,h.sx,h.sy,h.tx,h.ty); v+=0.06*Math.exp(-ld*ld/0.0006);}
+  return Math.min(1.1,v);
+}
+function pLayers(nx,ny,lp,t){
+  const s=t*0.55;
+  let v=((0.5+0.5*Math.sin((nx+ny)*5-s*1.6))+(0.5+0.5*Math.sin((nx-ny)*7+s*1.1))+(0.5+0.5*Math.sin(ny*9-s*0.7)))/3;
+  return Math.pow(v,1.5);
+}
+function pProb(nx,ny,lp,t,i){
+  let v=0; for(const c of cands)v+=c.w*gd(nx-c.x,ny-c.y,0.07);
+  return clamp(v*ss(0,0.45,lp)*(0.45+0.55*(0.5+0.5*Math.sin(t*4+FPH[i]))),0,1);
+}
+function pSample(nx,ny,lp,t,i){
+  let cloud=0; for(const c of cands)cloud+=c.w*gd(nx-c.x,ny-c.y,0.07);
+  cloud*=(1-ss(0,0.55,lp))*0.5*(0.55+0.45*Math.sin(t*4+FPH[i]));
+  const win=gd(nx-winner.x,ny-winner.y,0.05-0.025*ss(0,1,lp));
+  return clamp(Math.max(0,cloud)+win*(0.85+0.15*Math.sin(t*3))*ss(0.05,0.7,lp),0,1);
+}
+
+const NAMES=['prompt','tokenisation','embedding','attention','layer passes','probability','sampling','feedback'];
+const CAPTIONS=[
+ ["The prompt arrives","a line of text, taken in as a whole"],
+ ["The text is split into tokens","whole words and pieces of words"],
+ ["Each token becomes a list of numbers","placing it among related words and ideas"],
+ ["Tokens attend to one another","each one weighs how much the others matter to it"],
+ ["The signal passes through the layers","each layer adjusts what the one before produced"],
+ ["Every possible next token is scored","tens of thousands of candidates, each with a probability"],
+ ["One token is chosen","weighted by those scores, so not always the likeliest"],
+ ["The choice is added to the text","and the whole process runs again for the next token"]
+];
+const WIN=[[0.00,0.20],[0.10,0.32],[0.22,0.46],[0.34,0.70],[0.40,0.74],[0.64,0.86],[0.80,0.93],[0.88,1.00]];
+function wgt(s,e,u){const f=0.06;return ss(s,s+f,u)*(1-ss(e-f,e,u));}
+
+const TOTAL=48;
+let start=performance.now(), paused=false, pauseStart=0, curLoop=0, lastDom=-1;
+const w=new Array(8), lp=new Array(8);
+
+function frame(now){
+  if(paused){requestAnimationFrame(frame);return;}
+  const gt=(now-start)/1000, u=(gt%TOTAL)/TOTAL;
+  const li=Math.floor(gt/TOTAL);
+  if(li!==curLoop){curLoop=li;regen(li);}
+
+  let dom=0,dw=-1;
+  for(let k=0;k<8;k++){w[k]=wgt(WIN[k][0],WIN[k][1],u);
+    lp[k]=clamp((u-WIN[k][0])/(WIN[k][1]-WIN[k][0]),0,1);
+    if(w[k]>dw){dw=w[k];dom=k;}}
+  const tail=ss(0.93,1.0,u); if(tail>w[0]){w[0]=tail;lp[0]=(u-0.93)/0.07;}
+  const sw=0.12+0.30*clamp(w[3]+w[4],0,1);
+  if(dom!==lastDom){labelEl.textContent=String(dom+1).padStart(2,'0')+' \u00B7 '+NAMES[dom];lastDom=dom;}
+
+  ctx.fillStyle='rgba(237,236,233,0.26)'; ctx.fillRect(0,0,W,H);
+
+  for(let i=0;i<N;i++){
+    const nx=NX[i],ny=NY[i];
+    let v=substrate(nx,ny,gt,i)*sw;
+    if(w[0]>.012){const front=-0.08+lp[0]*1.22,rev=clamp((front-nx)/0.10,0,1),edge=Math.exp(-((nx-front)*(nx-front))/0.0018);
+      v+=(promptMask[i]*(0.32+0.68*rev)+edge*0.35)*w[0];}
+    if(w[1]>.012) v+=chipCluster(PX[i],PY[i],lp[1])*w[1];
+    if(w[2]>.012) v+=pEmbed(nx,ny,lp[2],gt)*w[2];
+    if(w[3]>.012) v+=pAttend(nx,ny,lp[3],gt)*w[3];
+    if(w[4]>.012) v+=pLayers(nx,ny,lp[4],gt)*w[4];
+    if(w[5]>.012) v+=pProb(nx,ny,lp[5],gt,i)*w[5];
+    if(w[6]>.012) v+=pSample(nx,ny,lp[6],gt,i)*w[6];
+    if(w[7]>.012){const orf=lp[7]*1.25-0.12,orev=clamp((orf-nx)/0.10,0,1);
+      v+=outputMask[i]*(0.32+0.68*orev)*w[7];}
+    v=1-Math.exp(-1.2*v);
+    if(v<0.04)continue;
+    const lvl=Math.min(L-1,(v*L)|0), rad=maxR*Math.pow(v,0.6);
+    if(v>0.62){ctx.fillStyle=glow[lvl];ctx.beginPath();ctx.arc(PX[i],PY[i],rad*2.4,0,6.2831853);ctx.fill();}
+    ctx.fillStyle=core[lvl];ctx.beginPath();ctx.arc(PX[i],PY[i],rad,0,6.2831853);ctx.fill();
+  }
+
+  // token chip text overlay
+  if(w[1]>0.04 && chips.length){
+    ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font='600 '+chips[0].fpx+'px monospace';
+    for(let i=0;i<chips.length;i++){const c=chips[i];
+      const on=ss(i/chips.length-0.03,i/chips.length+0.12,lp[1])*w[1]; if(on<0.04)continue;
+      const a=clamp(on,0,1);
+      ctx.globalAlpha=a*0.85; ctx.fillStyle='rgba(74,76,84,1)';
+      rrect(ctx,c.px-c.pw/2,c.py-c.ph/2,c.pw,c.ph,5); ctx.fill();
+      ctx.globalAlpha=a; ctx.fillStyle='#ffffff';
+      ctx.fillText(c.text,c.px,c.py);}
+    ctx.restore();
+  }
+
+  // stage caption: size and position reshuffled each loop
+  {
+    const ca=ss(0.12,0.6,w[dom]), Lc=capLayout[dom];
+    if(ca>0.02 && Lc){
+      const cap=CAPTIONS[dom];
+      const s1=Math.round(clamp(Lc.s1f*W,16,54)), s2=Math.round(s1*0.72);
+      ctx.save(); ctx.textBaseline='top';
+      ctx.font='600 '+s1+'px Helvetica, Arial, sans-serif'; const w1=ctx.measureText(cap[0]).width;
+      ctx.font='400 '+s2+'px Helvetica, Arial, sans-serif'; const w2=ctx.measureText(cap[1]).width;
+      const tw=Math.max(w1,w2), th=s1*1.35+s2, mx=W*0.04, my=H*0.05;
+      const bx=clamp(Lc.cxf*W-tw/2,mx,Math.max(mx,W-mx-tw));
+      const by=clamp(Lc.cyf*H-th/2,my,Math.max(my,H-my-th));
+      let ax,ta;
+      if(Lc.align==='left'){ax=bx;ta='left';}
+      else if(Lc.align==='right'){ax=bx+tw;ta='right';}
+      else{ax=bx+tw/2;ta='center';}
+      ctx.textAlign=ta;
+      ctx.shadowColor='rgba(34,36,42,0.55)'; ctx.shadowBlur=Math.max(4,s1*0.28);
+      ctx.font='600 '+s1+'px Helvetica, Arial, sans-serif';
+      ctx.globalAlpha=ca; ctx.fillStyle='#ffffff';
+      ctx.fillText(cap[0],ax,by);
+      ctx.font='400 '+s2+'px Helvetica, Arial, sans-serif';
+      ctx.globalAlpha=ca*0.92; ctx.fillStyle='#ffffff';
+      ctx.fillText(cap[1],ax,by+s1*1.35);
+      ctx.restore();
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+window.addEventListener('keydown',e=>{if(e.key==='l'||e.key==='L')labelEl.classList.toggle('hidden');});
+canvas.addEventListener('click',()=>{
+  if(!paused){paused=true;pauseStart=performance.now();}
+  else{start+=performance.now()-pauseStart;paused=false;}
+});
+</script>
+</body>
+</html>
